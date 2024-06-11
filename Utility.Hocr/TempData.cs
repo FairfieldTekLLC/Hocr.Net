@@ -121,7 +121,7 @@ public class TempData : IDisposable
 
 
 
-    private readonly ConcurrentStack<String> _toDestroy = new();
+    private readonly ConcurrentQueue<String> _toDestroy = new();
     private bool _cleanUpTimerRunning = false;
 
 
@@ -146,7 +146,7 @@ public class TempData : IDisposable
 
     private void CleanUpFiles()
     {
-        if (_toDestroy.TryPop(out string directoryToDelete))
+        if (_toDestroy.TryDequeue(out string directoryToDelete))
             try
             {
                 if (!Directory.Exists(directoryToDelete))
@@ -164,7 +164,7 @@ public class TempData : IDisposable
             }
             catch (Exception)
             {
-                _toDestroy.Push(directoryToDelete);
+                _toDestroy.Enqueue(directoryToDelete);
                 throw;
             }
     }
@@ -200,7 +200,7 @@ public class TempData : IDisposable
         if (!_caches.ContainsKey(sessionName))
             return;
         if (!_toDestroy.Contains(_caches[sessionName]))
-            _toDestroy.Push(_caches[sessionName]);
+            _toDestroy.Enqueue(_caches[sessionName]);
         if (_caches.ContainsKey(sessionName))
             _caches.Remove(sessionName);
     }
