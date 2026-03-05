@@ -16,6 +16,10 @@ This library IS THREADSAFE so you can process multiple PDF's at the same time in
 
 ## Recent Changes
 
+### New Features
+
+- **`PdfCompressor.CreateSearchablePdfAsync`** — Added async overload of `CreateSearchablePdf` with `CancellationToken` support. Uses native async file I/O (`WriteAsync`, `FlushAsync`, `ReadAllBytesAsync`) and offloads CPU-bound OCR and GhostScript compression to the thread pool via `Task.Run`. Cancellation is checked at each major stage and `OperationCanceledException` propagates unwrapped.
+
 ### Thread Safety & Concurrency Fixes
 
 - **`TempData._caches`** — Replaced `Dictionary<string, string>` with `ConcurrentDictionary<string, string>` to prevent data corruption under concurrent access from `Parallel.ForEach` and background timer threads.
@@ -117,4 +121,40 @@ using (comp = new PdfCompressor(ghostScriptPathToExecutable, new PdfCompressorSe
         }
     );
 }
+```
+
+### Async Usage
+
+Use `CreateSearchablePdfAsync` for non-blocking processing with cancellation support:
+
+```C#
+using Utility.Hocr.Enums;
+using Utility.Hocr.Pdf;
+
+const string ghostScriptPathToExecutable = @"C:\gs10.03.1\bin\gswin64c.exe";
+
+using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(30));
+
+using var comp = new PdfCompressor(ghostScriptPathToExecutable, new PdfCompressorSettings
+{
+    PdfCompatibilityLevel = PdfCompatibilityLevel.Acrobat_7_1_6,
+    WriteTextMode = WriteTextMode.Word,
+    Dpi = 400,
+    ImageType = PdfImageType.Jpg,
+    ImageQuality = 100,
+    CompressFinalPdf = true,
+    DistillerMode = dPdfSettings.prepress
+});
+
+comp.OnCompressorEvent += msg => Console.WriteLine(msg);
+
+string[] files = Directory.GetFiles("C:\\pdfin");
+IEnumerable<Task> tasks = files.Select(async file =>
+{
+    byte[] data = await File.ReadAllBytesAsync(file, cts.Token);
+    Tuple<byte[], string> result = await comp.CreateSearchablePdfAsync(data, new PdfMeta(), cancellationToken: cts.Token);
+    await File.WriteAllBytesAsync("c:\\PDFOUT\\" + Path.GetFileName(file), result.Item1, cts.Token);
+});
+
+await Task.WhenAll(tasks);
 ```

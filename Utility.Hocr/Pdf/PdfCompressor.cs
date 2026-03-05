@@ -201,6 +201,86 @@ public class PdfCompressor:IDisposable
     }
 
     /// <summary>
+    /// Asynchronously creates a searchable PDF from raw PDF file bytes by rendering each page
+    /// as an image, performing OCR with Tesseract, and embedding the recognized text as an
+    /// invisible overlay. Optionally compresses the final output using GhostScript.
+    /// </summary>
+    /// <param name="fileData">The raw bytes of the source PDF file.</param>
+    /// <param name="metaData">Metadata (title, author, etc.) to embed in the output PDF.</param>
+    /// <param name="firstPageOnly">If <c>true</c>, only the first page is processed.</param>
+    /// <param name="cancellationToken">Token to observe for cancellation requests.</param>
+    /// <returns>A tuple of the output PDF bytes and the extracted OCR text.</returns>
+    /// <exception cref="FailedToGenerateException">PDF generation failed.</exception>
+    /// <exception cref="OperationCanceledException">The operation was cancelled.</exception>
+    public async Task<Tuple<byte[], string>> CreateSearchablePdfAsync(byte[] fileData, PdfMeta metaData, bool firstPageOnly = false, CancellationToken cancellationToken = default)
+    {
+        if (fileData == null || fileData.Length == 0)
+            throw new FailedToGenerateException("No Data in fileData", new ArgumentException(nameof(fileData)));
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        string sessionName = TempData.Instance.CreateNewSession();
+        try
+        {
+            int pageCountStart = GetPages(fileData);
+            OnCompressorEvent?.Invoke("Created Session:" + sessionName);
+            string inputDataFilePath = TempData.Instance.CreateTempFile(sessionName, ".pdf");
+            string outputDataFilePath = TempData.Instance.CreateTempFile(sessionName, ".pdf");
+
+            await using (FileStream writer = new(inputDataFilePath, FileMode.Create, FileAccess.Write))
+            {
+                await writer.WriteAsync(fileData, 0, fileData.Length, cancellationToken);
+                await writer.FlushAsync(cancellationToken);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            bool signed = PdfSigned(inputDataFilePath);
+
+            OnCompressorEvent?.Invoke(sessionName + " Wrote binary to file");
+            OnCompressorEvent?.Invoke(sessionName + " Begin Compress and Ocr");
+            string pageBody = await Task.Run(() => CompressAndOcr(sessionName, inputDataFilePath, outputDataFilePath, metaData, firstPageOnly), cancellationToken);
+
+            if (signed || firstPageOnly)
+                return new Tuple<byte[], string>(fileData, pageBody);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            string outputFileName = outputDataFilePath;
+            if (PdfSettings.CompressFinalPdf)
+            {
+                OnCompressorEvent?.Invoke(sessionName + " Compressing output");
+                GhostScript gs = new(GhostScriptPath, PdfSettings.Dpi);
+                outputFileName = await Task.Run(() => gs.CompressPdf(outputDataFilePath, sessionName, PdfSettings.PdfCompatibilityLevel,
+                    PdfSettings.DistillerMode,
+                    PdfSettings.DistillerOptions), cancellationToken);
+            }
+
+            byte[] outFile = await File.ReadAllBytesAsync(outputFileName, cancellationToken);
+
+            int pageCountEnd = GetPages(outFile);
+            OnCompressorEvent?.Invoke(sessionName + " Destroying session");
+
+            if (pageCountEnd != pageCountStart || pageCountEnd == -100 || pageCountStart == -100)
+                throw new PageCountMismatchException("Page count is different", pageCountStart, pageCountEnd);
+            return new Tuple<byte[], string>(outFile, pageBody);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            OnExceptionOccurred?.Invoke(this, e);
+            throw new FailedToGenerateException("Error in: CreateSearchablePdfAsync", e);
+        }
+        finally
+        {
+            SessionsToClean.TryAdd(sessionName, sessionName);
+        }
+    }
+
+    /// <summary>
     /// Returns the number of pages in a PDF from its raw bytes.
     /// Returns -100 if the page count cannot be determined.
     /// </summary>
