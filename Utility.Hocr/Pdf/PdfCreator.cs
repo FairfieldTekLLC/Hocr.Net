@@ -13,10 +13,16 @@ using Rectangle = iTextSharp.text.Rectangle;
 
 namespace Utility.Hocr.Pdf;
 
+/// <summary>Raised to allow custom processing of an image before it is added to the PDF display layer.</summary>
 public delegate Image ProcessImageForDisplay(Image image);
 
+/// <summary>Raised to allow custom processing of an image before OCR is performed.</summary>
 public delegate Image ProcessImageForOcr(Image image);
 
+/// <summary>
+/// Creates PDF documents by combining page images with OCR text overlays.
+/// Supports multiple modes including image-only, text-only, OCR overlay, and debug visualization.
+/// </summary>
 internal class PdfCreator : IDisposable
 {
     private readonly float _dpi;
@@ -113,6 +119,14 @@ internal class PdfCreator : IDisposable
     }
 
 
+    /// <summary>
+    /// Adds a page to the PDF from an image file on disk.
+    /// </summary>
+    /// <param name="imagePath">Path to the source image file.</param>
+    /// <param name="mode">The PDF rendering mode (OCR, image-only, text-only, etc.).</param>
+    /// <param name="sessionName">The temp session name for intermediate files.</param>
+    /// <param name="dimension">The page dimensions in pixels.</param>
+    /// <returns>The OCR-extracted text body for the page, or empty if not applicable.</returns>
     public string AddPage(string imagePath, PdfMode mode, string sessionName, Rectangle dimension)
     {
         Image img = Image.FromFile(imagePath);
@@ -121,6 +135,10 @@ internal class PdfCreator : IDisposable
         return result;
     }
 
+    /// <summary>
+    /// Adds a page to the PDF from an in-memory image, processing all frames
+    /// (for multi-frame formats like TIFF) in the specified rendering mode.
+    /// </summary>
     public string AddPage(Image image, PdfMode mode, string sessionName, Rectangle dimension)
     {
         Guid objGuid = image.FrameDimensionsList[0];
@@ -224,6 +242,9 @@ internal class PdfCreator : IDisposable
         return i;
     }
 
+    /// <summary>
+    /// Serializes an image to a byte array using its native raw format.
+    /// </summary>
     public byte[] ImageToByteArray(Image imageIn)
     {
         using (MemoryStream ms = new())
@@ -236,6 +257,10 @@ internal class PdfCreator : IDisposable
     public event ProcessImageForDisplay OnProcessImageForDisplay;
     public event ProcessImageForOcr OnProcessImageForOcr;
 
+    /// <summary>
+    /// Finalizes the PDF document by ensuring at least one page exists,
+    /// then closing and flushing the underlying writer.
+    /// </summary>
     public void SaveAndClose()
     {
         try
@@ -281,9 +306,27 @@ internal class PdfCreator : IDisposable
         _doc.AddKeywords(keywords);
     }
 
+    /// <summary>
+    /// Writes OCR text as visible direct content on the page.
+    /// </summary>
     private void WriteDirectContent(HPage page)
     {
         List<HLine> allLines = page.Paragraphs.SelectMany(para => para.Lines).ToList();
+
+        BaseFont baseFont = BaseFont.CreateFont(BaseFont.HELVETICA, BaseFont.WINANSI, false);
+        if (!string.IsNullOrEmpty(PdfSettings.FontName))
+        {
+            string fontPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts),
+                PdfSettings.FontName);
+            baseFont = BaseFont.CreateFont(fontPath, BaseFont.IDENTITY_H, BaseFont.EMBEDDED);
+        }
+
+        float fontSize = allLines.Count > 0
+            ? allLines.Select(x => x.BBox.Height).Average() / PdfSettings.Dpi * 72.0f
+            : 2;
+        if ((int)fontSize == 0)
+            fontSize = 2;
+
         foreach (HParagraph para in page.Paragraphs)
             foreach (HLine line in para.Lines)
             {
@@ -299,19 +342,6 @@ internal class PdfCreator : IDisposable
 
                 PdfContentByte cb = _writer.DirectContent;
 
-                BaseFont baseFont = BaseFont.CreateFont(BaseFont.HELVETICA, BaseFont.WINANSI, false);
-                if (!string.IsNullOrEmpty(PdfSettings.FontName))
-                {
-                    string fontPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts),
-                        PdfSettings.FontName);
-                    baseFont = BaseFont.CreateFont(fontPath, BaseFont.IDENTITY_H, BaseFont.EMBEDDED);
-                }
-
-                float fontSize = allLines.Select(x => x.BBox.Height).Average() / PdfSettings.Dpi * 72.0f;
-
-                if ((int)fontSize == 0)
-                    fontSize = 2;
-
                 cb.BeginText();
                 cb.SetFontAndSize(baseFont, (int)Math.Floor(fontSize) - 1);
                 cb.SetTextMatrix(b.Left, _doc.PageSize.Height - b.Top - b.Height);
@@ -320,45 +350,47 @@ internal class PdfCreator : IDisposable
             }
     }
 
+    /// <summary>
+    /// Draws colored bounding-box rectangles for paragraphs, lines, words, and
+    /// combined lines onto the page image for debugging/visualization.
+    /// </summary>
     private void WritePageDrawBlocks(Image img, HPage page, Rectangle dimension)
     {
-        Image himage = img;
-
-        Bitmap rectCanvas = new(himage.Width, himage.Height);
-        Graphics grPhoto = Graphics.FromImage(rectCanvas);
-        grPhoto.DrawImage(himage, new System.Drawing.Rectangle(0, 0, rectCanvas.Width, rectCanvas.Height), 0, 0,
-            rectCanvas.Width, rectCanvas.Height,
-            GraphicsUnit.Pixel);
-        Graphics bg = Graphics.FromImage(rectCanvas);
-        Pen bpen = new(Color.Red, 3);
-        Pen rpen = new(Color.Blue, 3);
-        Pen gpen = new(Color.Green, 3);
-        Pen ppen = new(Color.HotPink, 3);
-
-
-        foreach (HParagraph para in page.Paragraphs)
+        Bitmap rectCanvas = new(img.Width, img.Height);
+        using (Graphics bg = Graphics.FromImage(rectCanvas))
+        using (Pen bpen = new(Color.Red, 3))
+        using (Pen rpen = new(Color.Blue, 3))
+        using (Pen gpen = new(Color.Green, 3))
+        using (Pen ppen = new(Color.HotPink, 3))
         {
-            bg.DrawRectangle(gpen,
-                new System.Drawing.Rectangle(new Point((int)para.BBox.Left, (int)para.BBox.Top),
-                    new Size((int)para.BBox.Width, (int)para.BBox.Height)));
+            bg.DrawImage(img, new System.Drawing.Rectangle(0, 0, rectCanvas.Width, rectCanvas.Height), 0, 0,
+                rectCanvas.Width, rectCanvas.Height,
+                GraphicsUnit.Pixel);
 
-            foreach (HLine line in para.Lines)
+            foreach (HParagraph para in page.Paragraphs)
             {
-                foreach (HWord word in line.Words)
-                    bg.DrawRectangle(rpen,
-                        new System.Drawing.Rectangle(new Point((int)word.BBox.Left, (int)word.BBox.Top),
-                            new Size((int)word.BBox.Width, (int)word.BBox.Height)));
-                bg.DrawRectangle(bpen,
-                    new System.Drawing.Rectangle(new Point((int)line.BBox.Left, (int)line.BBox.Top),
-                        new Size((int)line.BBox.Width, (int)line.BBox.Height)));
-            }
-        }
+                bg.DrawRectangle(gpen,
+                    new System.Drawing.Rectangle(new Point((int)para.BBox.Left, (int)para.BBox.Top),
+                        new Size((int)para.BBox.Width, (int)para.BBox.Height)));
 
-        IList<HLine> combinedLines = page.CombineSameRowLines();
-        foreach (HLine l in combinedLines.Where(x => x.LineWasCombined))
-            bg.DrawRectangle(ppen,
-                new System.Drawing.Rectangle(new Point((int)l.BBox.Left, (int)l.BBox.Top),
-                    new Size((int)l.BBox.Width, (int)l.BBox.Height)));
+                foreach (HLine line in para.Lines)
+                {
+                    foreach (HWord word in line.Words)
+                        bg.DrawRectangle(rpen,
+                            new System.Drawing.Rectangle(new Point((int)word.BBox.Left, (int)word.BBox.Top),
+                                new Size((int)word.BBox.Width, (int)word.BBox.Height)));
+                    bg.DrawRectangle(bpen,
+                        new System.Drawing.Rectangle(new Point((int)line.BBox.Left, (int)line.BBox.Top),
+                            new Size((int)line.BBox.Width, (int)line.BBox.Height)));
+                }
+            }
+
+            IList<HLine> combinedLines = page.CombineSameRowLines();
+            foreach (HLine l in combinedLines.Where(x => x.LineWasCombined))
+                bg.DrawRectangle(ppen,
+                    new System.Drawing.Rectangle(new Point((int)l.BBox.Left, (int)l.BBox.Top),
+                        new Size((int)l.BBox.Width, (int)l.BBox.Height)));
+        }
 
         AddImage(rectCanvas, dimension);
     }
@@ -391,8 +423,20 @@ internal class PdfCreator : IDisposable
             WriteUnderlayContent(c, baseFont);
     }
 
+    /// <summary>
+    /// Writes OCR text as invisible underlay content beneath the page image,
+    /// enabling text selection and search in the output PDF.
+    /// </summary>
     private void WriteUnderlayContent(HPage page)
     {
+        BaseFont baseFont = BaseFont.CreateFont(BaseFont.HELVETICA, BaseFont.WINANSI, false);
+        if (!string.IsNullOrEmpty(PdfSettings.FontName))
+        {
+            string fontPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts),
+                PdfSettings.FontName);
+            baseFont = BaseFont.CreateFont(fontPath, BaseFont.IDENTITY_H, BaseFont.EMBEDDED);
+        }
+
         foreach (HParagraph para in page.Paragraphs.ToList())
             foreach (HLine line in para.Lines.ToList())
                 switch (PdfSettings.WriteTextMode)
@@ -410,14 +454,6 @@ internal class PdfCreator : IDisposable
                                     continue;
 
                                 PdfContentByte cb = _writer.DirectContentUnder;
-
-                                BaseFont baseFont = BaseFont.CreateFont(BaseFont.HELVETICA, BaseFont.WINANSI, false);
-                                if (!string.IsNullOrEmpty(PdfSettings.FontName))
-                                {
-                                    string fontPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts),
-                                        PdfSettings.FontName);
-                                    baseFont = BaseFont.CreateFont(fontPath, BaseFont.IDENTITY_H, BaseFont.EMBEDDED);
-                                }
 
                                 cb.BeginText();
                                 cb.SetFontAndSize(baseFont, b.Height > 0 ? b.Height : 2);
@@ -444,7 +480,6 @@ internal class PdfCreator : IDisposable
                                 continue;
                             PdfContentByte cb = _writer.DirectContentUnder;
 
-                            BaseFont baseFont = BaseFont.CreateFont(BaseFont.HELVETICA, BaseFont.WINANSI, false);
                             cb.BeginText();
                             cb.SetFontAndSize(baseFont, b.Height > 0 ? b.Height : 2);
                             cb.SetTextMatrix(b.Left, _doc.PageSize.Height - b.Top - b.Height + 2);

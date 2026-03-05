@@ -8,20 +8,31 @@ using Rectangle = iTextSharp.text.Rectangle;
 
 namespace Utility.Hocr.Pdf;
 #pragma warning disable CA1416
+
+/// <summary>Raised when an exception occurs during PDF compression or OCR processing.</summary>
 public delegate void CompressorExceptionOccurred(PdfCompressor c, Exception x);
 
+/// <summary>Raised to report progress messages during PDF compression and OCR.</summary>
 public delegate void CompressorEvent(string msg);
 
+/// <summary>Raised to allow callers to pre-process a page image before OCR. Return the path to the processed image.</summary>
 public delegate string PreProcessImage(string bitmapPath);
 
-
-
-
-
+/// <summary>
+/// Converts PDF files into searchable PDFs by performing OCR on each page
+/// and embedding the recognized text as an invisible overlay. Supports
+/// optional GhostScript-based compression of the final output.
+/// </summary>
 public class PdfCompressor:IDisposable
 {
     private System.Timers.Timer CleanUpTimer;
 
+    /// <summary>
+    /// Initializes a new PDF compressor with the specified GhostScript path and settings.
+    /// Starts a background timer that periodically cleans up completed sessions.
+    /// </summary>
+    /// <param name="ghostScriptPath">Full path to the GhostScript executable.</param>
+    /// <param name="settings">Compression and OCR settings. Uses defaults if <c>null</c>.</param>
     public PdfCompressor(string ghostScriptPath, PdfCompressorSettings settings = null)
     {
         PdfSettings = settings ?? new PdfCompressorSettings();
@@ -58,6 +69,10 @@ public class PdfCompressor:IDisposable
 
     public PdfCompressorSettings PdfSettings { get; }
 
+    /// <summary>
+    /// Reads each page of the input PDF as an image, performs OCR, and writes
+    /// the image with invisible text overlay to the output PDF.
+    /// </summary>
     private string CompressAndOcr(string sessionName, string inputFileName, string outputFileName, PdfMeta meta, bool firstPageOnly)
     {
         string pageBody = "";
@@ -82,7 +97,6 @@ public class PdfCompressor:IDisposable
                             using (Bitmap chk = new(ImageFileName))
                             {
                                 pageSize = new(0, 0, chk.Width, chk.Height);
-                                chk.Dispose();
                             }
                             pageBody += writer.AddPage(ImageFileName, PdfMode.Ocr, sessionName, pageSize);
 
@@ -95,9 +109,7 @@ public class PdfCompressor:IDisposable
                                                       Path.GetFileName(inputFileName) + ". Skipping page");
                         }
 
-                    reader.Dispose();
                     writer.SaveAndClose();
-                    writer.Dispose();
                     return pageBody;
                 }
                 catch (Exception x)
@@ -106,9 +118,7 @@ public class PdfCompressor:IDisposable
                                               Path.GetFileName(inputFileName) +
                                               ". Skipping");
                     OnExceptionOccurred?.Invoke(this, x);
-                    reader?.Dispose();
                     writer?.SaveAndClose();
-                    writer?.Dispose();
                     return pageBody;
                 }
             }
@@ -116,8 +126,21 @@ public class PdfCompressor:IDisposable
     }
 
 
+    /// <summary>
+    /// Creates a searchable PDF from raw PDF file bytes by rendering each page as an image,
+    /// performing OCR with Tesseract, and embedding the recognized text as an invisible overlay.
+    /// Optionally compresses the final output using GhostScript.
+    /// </summary>
+    /// <param name="fileData">The raw bytes of the source PDF file.</param>
+    /// <param name="metaData">Metadata (title, author, etc.) to embed in the output PDF.</param>
+    /// <param name="firstPageOnly">If <c>true</c>, only the first page is processed.</param>
+    /// <returns>A tuple of the output PDF bytes and the extracted OCR text.</returns>
+    /// <exception cref="FailedToGenerateException">PDF generation failed.</exception>
     public Tuple<byte[], string> CreateSearchablePdf(byte[] fileData, PdfMeta metaData, bool firstPageOnly = false)
     {
+        if (fileData == null || fileData.Length == 0)
+            throw new FailedToGenerateException("No Data in fileData", new ArgumentException(nameof(fileData)));
+
         string sessionName = TempData.Instance.CreateNewSession();
         try
         {
@@ -125,10 +148,6 @@ public class PdfCompressor:IDisposable
             OnCompressorEvent?.Invoke("Created Session:" + sessionName);
             string inputDataFilePath = TempData.Instance.CreateTempFile(sessionName, ".pdf");
             string outputDataFilePath = TempData.Instance.CreateTempFile(sessionName, ".pdf");
-
-
-            if (fileData == null || fileData.Length == 0)
-                throw new Exception("No Data in fileData");
 
 
             using (FileStream writer = new(inputDataFilePath, FileMode.Create, FileAccess.Write))
@@ -181,6 +200,10 @@ public class PdfCompressor:IDisposable
         }
     }
 
+    /// <summary>
+    /// Returns the number of pages in a PDF from its raw bytes.
+    /// Returns -100 if the page count cannot be determined.
+    /// </summary>
     private int GetPages(byte[] data)
     {
         try
@@ -199,11 +222,17 @@ public class PdfCompressor:IDisposable
     public event CompressorExceptionOccurred OnExceptionOccurred;
     public event PreProcessImage OnPreProcessImage;
 
+    /// <summary>
+    /// Checks whether a PDF file contains digital signatures.
+    /// Returns <c>true</c> if signed or if the file cannot be read.
+    /// </summary>
+    /// <param name="path">Path to the PDF file to check.</param>
+    /// <returns><c>true</c> if the PDF is signed or unreadable; otherwise <c>false</c>.</returns>
     public bool PdfSigned(string path)
     {
         try
         {
-            iTextSharp.text.pdf.PdfReader reader = new(path);
+            using iTextSharp.text.pdf.PdfReader reader = new(path);
             AcroFields fields = reader.AcroFields;
             return fields.GetSignatureNames().Count > 0;
         }
@@ -213,8 +242,14 @@ public class PdfCompressor:IDisposable
         }
     }
 
+    /// <summary>
+    /// Stops the session cleanup timer and disposes the shared <see cref="TempData"/> instance.
+    /// </summary>
     public void Dispose()
     {
+        CleanUpTimer.Stop();
+        CleanUpTimer.Elapsed -= CleanUpTimer_Elapsed;
+        CleanUpTimer.Dispose();
         TempData.Instance.Dispose();
     }
 }

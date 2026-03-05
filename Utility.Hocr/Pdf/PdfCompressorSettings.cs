@@ -3,6 +3,9 @@ using Utility.Hocr.Enums;
 
 namespace Utility.Hocr.Pdf;
 
+/// <summary>
+/// Configuration settings for PDF compression, OCR processing, and output format.
+/// </summary>
 public class PdfCompressorSettings
 {
     public PdfCompressorSettings()

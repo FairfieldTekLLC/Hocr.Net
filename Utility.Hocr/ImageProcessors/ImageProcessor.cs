@@ -6,8 +6,18 @@ using Utility.Hocr.Exceptions;
 
 namespace Utility.Hocr.ImageProcessors;
 
+/// <summary>
+/// Provides image conversion and processing utilities for PDF generation,
+/// including format conversion, bitonal thresholding, and resolution adjustment.
+/// </summary>
 internal class ImageProcessor
 {
+    /// <summary>
+    /// Converts a bitmap to a 1-bit-per-pixel bitonal (black and white) image
+    /// using a fixed brightness threshold of 580 (sum of R+G+B channels).
+    /// </summary>
+    /// <param name="original">The source bitmap to convert.</param>
+    /// <returns>A new <see cref="Bitmap"/> in <see cref="PixelFormat.Format1bppIndexed"/> format.</returns>
     public static Bitmap ConvertToBitonal(Bitmap original)
     {
         Bitmap source;
@@ -104,6 +114,13 @@ internal class ImageProcessor
     }
 
 
+    /// <summary>
+    /// Converts an image to a CCITT Group 4 fax-compressed TIFF, suitable
+    /// for efficient storage of bitonal document images.
+    /// </summary>
+    /// <param name="image">The source image to convert.</param>
+    /// <param name="dpi">The resolution in dots per inch for the output image.</param>
+    /// <returns>A TIFF-encoded <see cref="Image"/> with CCITT4 compression.</returns>
     public static Image ConvertToCcittFaxTiff(Image image, int dpi)
     {
         ImageCodecInfo codecInfo = GetCodecInfoForName("TIFF");
@@ -125,6 +142,14 @@ internal class ImageProcessor
         return Image.FromStream(ms);
     }
 
+    /// <summary>
+    /// Converts an image to the specified format at the given quality and resolution.
+    /// </summary>
+    /// <param name="imageToConvert">The source image to convert.</param>
+    /// <param name="codecName">The image codec format name (e.g., "PNG", "JPEG", "BMP").</param>
+    /// <param name="quality">The encoding quality level (0–100).</param>
+    /// <param name="dpi">The resolution in dots per inch for the output image.</param>
+    /// <returns>A new <see cref="Image"/> encoded in the specified format.</returns>
     public static Image ConvertToImage(Image imageToConvert, string codecName, long quality, int dpi)
     {
         ImageCodecInfo codecInfo = GetCodecInfoForName(codecName);
@@ -141,6 +166,13 @@ internal class ImageProcessor
     }
 
 
+    /// <summary>
+    /// Creates a 24-bit RGB bitmap copy of the given image at the specified resolution.
+    /// </summary>
+    /// <param name="image">The source image to copy.</param>
+    /// <param name="dpi">The resolution in dots per inch for the output bitmap.</param>
+    /// <returns>A new <see cref="Bitmap"/> in <see cref="PixelFormat.Format24bppRgb"/> format.</returns>
+    /// <exception cref="InvalidBitmapException">The image could not be converted.</exception>
     public static Bitmap GetAsBitmap(Image image, int dpi)
     {
         try
@@ -159,12 +191,14 @@ internal class ImageProcessor
     }
 
 
+    /// <summary>
+    /// Retrieves the <see cref="ImageCodecInfo"/> for the encoder matching the specified format name.
+    /// </summary>
+    /// <param name="codecType">The format description to match (e.g., "JPEG", "PNG", "BMP", "TIFF").</param>
+    /// <returns>The matching <see cref="ImageCodecInfo"/>, or <c>null</c> if not found.</returns>
     public static ImageCodecInfo GetCodecInfoForName(string codecType)
     {
         ImageCodecInfo[] info = ImageCodecInfo.GetImageEncoders();
-        return (from t in info
-            let enumName = codecType
-            where t.FormatDescription.Equals(enumName)
-            select t).FirstOrDefault();
+        return info.FirstOrDefault(t => t.FormatDescription.Equals(codecType));
     }
 }

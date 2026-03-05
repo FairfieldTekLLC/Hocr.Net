@@ -1,5 +1,8 @@
 ﻿namespace Utility.Hocr.Enums;
 
+/// <summary>
+/// Specifies the PDF version compatibility level for GhostScript output.
+/// </summary>
 public enum PdfCompatibilityLevel
 {
     Acrobat_4_1_3,

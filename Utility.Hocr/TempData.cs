@@ -1,17 +1,21 @@
 ﻿using System.Collections.Concurrent;
-using System.Diagnostics;
-using System.Text.RegularExpressions;
 
 namespace Utility.Hocr;
 
+/// <summary>
+/// Manages temporary file storage for PDF processing sessions. Provides session-based
+/// temporary directory and file creation with automatic background cleanup of destroyed sessions.
+/// Accessed as a thread-safe singleton via <see cref="Instance"/>.
+/// </summary>
 public class TempData : IDisposable
 {
     private static readonly Lazy<TempData> LazyInstance =
-        new(CreateInstanceOfT, LazyThreadSafetyMode.ExecutionAndPublication);
+        new(() => new TempData(), LazyThreadSafetyMode.ExecutionAndPublication);
 
-    private readonly Dictionary<string, string> _caches = new();
+    private readonly ConcurrentDictionary<string, string> _caches = new();
 
     private System.Timers.Timer CleanUpTimer;
+    private int _disposed = 0;
 
 
     private TempData()
@@ -30,7 +34,7 @@ public class TempData : IDisposable
                 {
                     Directory.Delete(directory, true);
                 }
-                catch (Exception e)
+                catch (Exception)
                 {
                     //
                 }
@@ -51,88 +55,103 @@ public class TempData : IDisposable
 
     private string TemporaryFilePath { get; } = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cache");
 
+    /// <summary>
+    /// Gets the singleton instance of <see cref="TempData"/>. The instance is created
+    /// lazily on first access and is safe for concurrent use.
+    /// </summary>
     public static TempData Instance => LazyInstance.Value;
 
 
+    /// <summary>
+    /// Creates a named subdirectory within an existing session's temporary folder.
+    /// </summary>
+    /// <param name="sessionName">The session identifier returned by <see cref="CreateNewSession"/>.</param>
+    /// <param name="directoryName">The name of the subdirectory to create.</param>
+    /// <returns>The full path to the newly created directory.</returns>
+    /// <exception cref="ObjectDisposedException">This instance has been disposed.</exception>
+    /// <exception cref="Exception">The session does not exist or the directory already exists.</exception>
     public string CreateDirectory(string sessionName, string directoryName)
     {
-        if (!_caches.ContainsKey(sessionName))
+        if (Volatile.Read(ref _disposed) == 1)
+            throw new ObjectDisposedException(nameof(TempData));
+
+        if (!_caches.TryGetValue(sessionName, out string cachePath))
             throw new Exception("Invalid Session.");
 
-        if (Directory.Exists(Path.Combine(_caches[sessionName], directoryName)))
+        string fullPath = Path.Combine(cachePath, directoryName);
+
+        if (Directory.Exists(fullPath))
             throw new Exception("Directory Exists.");
 
-        Directory.CreateDirectory(Path.Combine(_caches[sessionName], directoryName));
+        Directory.CreateDirectory(fullPath);
 
-        return Path.Combine(_caches[sessionName], directoryName);
+        return fullPath;
     }
 
-    private static TempData CreateInstanceOfT()
-    {
-        return Activator.CreateInstance(typeof(TempData), true) as TempData;
-    }
-
+    /// <summary>
+    /// Creates a new temporary session with its own isolated directory on disk.
+    /// The session directory is created under the application's cache folder.
+    /// </summary>
+    /// <returns>The session identifier, used to create temp files and to destroy the session later.</returns>
+    /// <exception cref="ObjectDisposedException">This instance has been disposed.</exception>
     public string CreateNewSession()
     {
-        string sessionName = Guid.NewGuid().ToString();
+        if (Volatile.Read(ref _disposed) == 1)
+            throw new ObjectDisposedException(nameof(TempData));
 
-        if (string.IsNullOrEmpty(sessionName))
-            throw new Exception("Session name cannot be empty!");
-
-        if (_caches.ContainsKey(sessionName))
-            throw new Exception("Session already exist!");
-
-        Regex rgx = new("[^a-zA-Z0-9 -]");
-
-        string newFolderName = rgx.Replace(sessionName, "");
-
-        string originalName = newFolderName;
-
-        int counter = 0;
-
-        while (Directory.Exists(Path.Combine(TemporaryFilePath, newFolderName)))
-        {
-            counter++;
-            newFolderName = originalName + "_" + counter;
-        }
+        string sessionName = Guid.NewGuid().ToString("N");
+        string folderPath = Path.Combine(TemporaryFilePath, sessionName);
 
         try
         {
-            Directory.CreateDirectory(Path.Combine(TemporaryFilePath, newFolderName));
+            Directory.CreateDirectory(folderPath);
         }
         catch (Exception)
         {
             throw new Exception("Cannot Create Session Folder.");
         }
 
-        _caches.Add(sessionName, Path.Combine(TemporaryFilePath, newFolderName));
-        return newFolderName;
+        if (!_caches.TryAdd(sessionName, folderPath))
+            throw new Exception("Session already exist!");
+        return sessionName;
     }
 
+    /// <summary>
+    /// Generates a unique temporary file path within the specified session's directory.
+    /// The file is not created on disk; only the path is returned.
+    /// </summary>
+    /// <param name="sessionName">The session identifier returned by <see cref="CreateNewSession"/>.</param>
+    /// <param name="extensionWithDot">The file extension including the leading dot (e.g., ".pdf").</param>
+    /// <param name="folders">Reserved for future use.</param>
+    /// <returns>The full path for the new temporary file.</returns>
+    /// <exception cref="ObjectDisposedException">This instance has been disposed.</exception>
+    /// <exception cref="Exception">The session does not exist.</exception>
     public string CreateTempFile(string sessionName, string extensionWithDot, string folders = null)
     {
-        if (!_caches.ContainsKey(sessionName))
+        if (Volatile.Read(ref _disposed) == 1)
+            throw new ObjectDisposedException(nameof(TempData));
+
+        if (!_caches.TryGetValue(sessionName, out string cachePath))
             throw new Exception("Invalid Session");
-        string newFile = Path.Combine(_caches[sessionName],
-            Path.GetFileNameWithoutExtension(Path.GetRandomFileName()) + DateTime.Now.Second +
-            DateTime.Now.Millisecond + extensionWithDot);
+        string newFile = Path.Combine(cachePath, Guid.NewGuid().ToString("N") + extensionWithDot);
         return newFile;
     }
 
 
 
     private readonly ConcurrentQueue<String> _toDestroy = new();
-    private bool _cleanUpTimerRunning = false;
+    private int _cleanUpTimerRunning = 0;
 
 
     private void CleanUpTimer_Elapsed(object sender, System.Timers.ElapsedEventArgs e)
     {
-        if (_cleanUpTimerRunning)
+        if (Volatile.Read(ref _disposed) == 1)
             return;
 
-        _cleanUpTimerRunning = true;
-        try
+        if (Interlocked.CompareExchange(ref _cleanUpTimerRunning, 1, 0) != 0)
+            return;
 
+        try
         {
             CleanUpFiles();
         }
@@ -140,68 +159,95 @@ public class TempData : IDisposable
         {
             //
         }
-
-        _cleanUpTimerRunning = false;
+        finally
+        {
+            Interlocked.Exchange(ref _cleanUpTimerRunning, 0);
+        }
     }
 
+    /// <summary>
+    /// Processes queued directory deletions. Iterates through all items currently in the queue,
+    /// deleting unlocked directories and re-enqueuing any that still have locked files.
+    /// Uses a bounded loop based on the current queue count to avoid re-processing
+    /// items that were re-enqueued during this pass.
+    /// </summary>
     private void CleanUpFiles()
     {
-        if (_toDestroy.TryDequeue(out string directoryToDelete))
+        int itemsToProcess = _toDestroy.Count;
+        for (int i = 0; i < itemsToProcess; i++)
+        {
+            if (!_toDestroy.TryDequeue(out string directoryToDelete))
+                break;
+
             try
             {
                 if (!Directory.Exists(directoryToDelete))
-                    return;
+                    continue;
 
                 foreach (string filename in Directory.GetFiles(directoryToDelete, "*.*", SearchOption.AllDirectories))
                 {
                     if (FileLockInfo.FileUtil.WhoIsLocking(filename).Count > 0)
                         throw new Exception("File Locked");
-                    if (File.Exists(filename))
-                        File.Delete(filename);
                 }
-                if (Directory.Exists(directoryToDelete))
-                    Directory.Delete(directoryToDelete, true);
+
+                Directory.Delete(directoryToDelete, true);
             }
             catch (Exception)
             {
                 _toDestroy.Enqueue(directoryToDelete);
-                throw;
-            }
-    }
-
-
-    public void Dispose()
-    {
-        CleanUpTimer.Stop();
-        CleanUpTimer.Dispose();
-        foreach (string key in _caches.Keys.ToList())
-            DestroySession(key);
-
-        int attempts = 0;
-        while (_toDestroy.Count > 0)
-        {
-            try
-            {
-                attempts++;
-                Thread.SpinWait(5);
-                CleanUpFiles();
-            }
-            catch (Exception e)
-            {
-                if (attempts > 10)
-                    return;
             }
         }
-
     }
 
+
+    /// <summary>
+    /// Stops the background cleanup timer, waits for any in-flight cleanup to finish,
+    /// then destroys all remaining sessions and makes a best-effort attempt to delete
+    /// their directories. Retries up to 10 times with a 500ms delay between attempts
+    /// for directories that still have locked files.
+    /// </summary>
+    public void Dispose()
+    {
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+            return;
+
+        CleanUpTimer.Stop();
+        CleanUpTimer.Elapsed -= CleanUpTimer_Elapsed;
+        CleanUpTimer.Dispose();
+
+        // Wait for any in-flight timer callback to finish before we run our own cleanup.
+        SpinWait spin = default;
+        while (Interlocked.CompareExchange(ref _cleanUpTimerRunning, 1, 0) != 0)
+        {
+            spin.SpinOnce();
+        }
+        // _cleanUpTimerRunning is now 1, so no timer callback can enter.
+
+        foreach (var kvp in _caches)
+            DestroySession(kvp.Key);
+
+        int attempts = 0;
+        while (_toDestroy.Count > 0 && attempts < 10)
+        {
+            CleanUpFiles();
+            if (_toDestroy.Count > 0)
+            {
+                attempts++;
+                Thread.Sleep(500);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Removes a session from the active cache and queues its directory for
+    /// background deletion. If the session does not exist, this is a no-op.
+    /// </summary>
+    /// <param name="sessionName">The session identifier returned by <see cref="CreateNewSession"/>.</param>
     public void DestroySession(string sessionName)
     {
-        if (!_caches.ContainsKey(sessionName))
-            return;
-        if (!_toDestroy.Contains(_caches[sessionName]))
-            _toDestroy.Enqueue(_caches[sessionName]);
-        if (_caches.ContainsKey(sessionName))
-            _caches.Remove(sessionName);
+        if (_caches.TryRemove(sessionName, out string cachePath))
+        {
+            _toDestroy.Enqueue(cachePath);
+        }
     }
 }
