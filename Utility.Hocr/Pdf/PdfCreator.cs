@@ -287,11 +287,9 @@ internal class PdfCreator : IDisposable
         _doc.SetMargins(0, 0, 0, 0);
 
         _writer = PdfWriter.GetInstance(_doc, new FileStream(fileName, FileMode.Create));
-        _writer.CompressionLevel = 100;
+        _writer.CompressionLevel = PdfStream.BEST_COMPRESSION;
         _writer.SetFullCompression();
         _writer.SetMargins(0, 0, 0, 0);
-        _writer.Close();
-        _writer.Dispose();
 
 
 

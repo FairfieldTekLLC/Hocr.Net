@@ -66,7 +66,7 @@ internal class GhostScript
 
             string outPutFileName = TempData.Instance.CreateTempFile(sessionName, ".pdf");
             string command =
-                $@"-q -dNOPAUSE -dBATCH -dSAFER -sDEVICE=pdfwrite -dCompatibilityLevel={clevel} -dPDFSETTINGS=/{dPdfSettings} {options} -sOutputFile={'"'}{outPutFileName}{'"'} {'"'}{inputPdf}{'"'} -c quit";
+                $@"-q -dNOPAUSE -dBATCH -dSAFER -sDEVICE=pdfwrite -dCompatibilityLevel={clevel} -dPDFSETTINGS=/{dPdfSettings} -dDetectDuplicateImages=true -dCompressFonts=true {options} -sOutputFile={'"'}{outPutFileName}{'"'} {'"'}{inputPdf}{'"'} -c quit";
             RunCommand(command);
             return outPutFileName;
         }

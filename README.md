@@ -29,6 +29,12 @@ This library IS THREADSAFE so you can process multiple PDF's at the same time in
 - **`TempData` public methods** — Added `ObjectDisposedException` guards to `CreateNewSession`, `CreateTempFile`, and `CreateDirectory`.
 - **`PdfCompressor.Dispose`** — Now stops and disposes its own `CleanUpTimer` (previously leaked).
 
+### Compression Improvements (Lossless)
+
+- **`PdfCreator.SetupDocumentWriter`** — Removed premature `_writer.Close()` / `_writer.Dispose()` calls that occurred before the document was opened. This caused `SetFullCompression()` to have no effect, meaning PDF object streams (images, fonts, metadata) were not Flate-compressed.
+- **`PdfCreator.SetupDocumentWriter`** — Fixed `CompressionLevel = 100` (invalid for zlib, which accepts 0–9) to `PdfStream.BEST_COMPRESSION` (9).
+- **`GhostScript.CompressPdf`** — Added `-dDetectDuplicateImages=true` (deduplicates identical images across pages) and `-dCompressFonts=true` (compresses embedded font data) to the GhostScript command line. Both are lossless optimizations that reduce output size without affecting image quality.
+
 ### Bug Fixes
 
 - **`OcrController.CreateHocr`** — Fixed hardcoded `"eng"` language; now correctly passes the `language` parameter to the Tesseract engine.
